@@ -138,3 +138,8 @@ export function isMap(target) {
 export function isSet(target) {
     return target instanceof Set
 }
+
+// Retrieve the latest values of the draft.
+export function latest(state) {
+    return state.copy || state.base
+}

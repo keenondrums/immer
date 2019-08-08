@@ -6,6 +6,9 @@ import {
     isDraft,
     isDraftable,
     isEnumerable,
+    isMap,
+    isSet,
+    latest,
     shallowCopy,
     DRAFT_STATE
 } from "./common"
@@ -35,8 +38,9 @@ export function willFinalize(scope, result, isReplaced) {
 export function createProxy(base, parent) {
     const isArray = Array.isArray(base)
     const draft = clonePotentialDraft(base)
+    // We keep it even for Maps and Sets to proxy their own properties
     each(draft, prop => {
-        proxyProperty(draft, prop, isArray || isEnumerable(base, prop))
+        proxyObjectOwnProperty(draft, prop, isArray || isEnumerable(base, prop))
     })
 
     // See "proxy.js" for property documentation.
@@ -54,6 +58,11 @@ export function createProxy(base, parent) {
         revoke,
         revoked: false // es5 only
     }
+    // Map drafts must support object keys, so we use Map objects to track changes.
+    // We don't do the same for Sets as Sets don't have keys
+    if (isMap(base)) {
+        state.assigned = new Map()
+    }
 
     createHiddenProperty(draft, DRAFT_STATE, state)
     scope.drafts.push(draft)
@@ -64,12 +73,8 @@ function revoke() {
     this.revoked = true
 }
 
-function latest(state) {
-    return state.copy || state.base
-}
-
 // Access a property without creating an Immer draft.
-function peek(draft, prop) {
+function peekProxiedProp(draft, prop) {
     const state = draft[DRAFT_STATE]
     if (state && !state.finalizing) {
         state.finalizing = true
@@ -80,23 +85,23 @@ function peek(draft, prop) {
     return draft[prop]
 }
 
-function get(state, prop) {
+function getProxiedProp(state, prop) {
     assertUnrevoked(state)
-    const value = peek(latest(state), prop)
+    const value = peekProxiedProp(latest(state), prop)
     if (state.finalizing) return value
     // Create a draft if the value is unmodified.
-    if (value === peek(state.base, prop) && isDraftable(value)) {
+    if (value === peekProxiedProp(state.base, prop) && isDraftable(value)) {
         prepareCopy(state)
         return (state.copy[prop] = createProxy(value, state))
     }
     return value
 }
 
-function set(state, prop, value) {
+function setProxiedProp(state, prop, value) {
     assertUnrevoked(state)
     state.assigned[prop] = true
     if (!state.modified) {
-        if (is(value, peek(latest(state), prop))) return
+        if (is(value, peekProxiedProp(latest(state), prop))) return
         markChanged(state)
         prepareCopy(state)
     }
@@ -125,7 +130,7 @@ function clonePotentialDraft(base) {
     return shallowCopy(base)
 }
 
-function proxyProperty(draft, prop, enumerable) {
+function proxyObjectOwnProperty(draft, prop, enumerable) {
     let desc = descriptors[prop]
     if (desc) {
         desc.enumerable = enumerable
@@ -134,14 +139,39 @@ function proxyProperty(draft, prop, enumerable) {
             configurable: true,
             enumerable,
             get() {
-                return get(this[DRAFT_STATE], prop)
+                return getProxiedProp(this[DRAFT_STATE], prop)
             },
             set(value) {
-                set(this[DRAFT_STATE], prop, value)
+                return setProxiedProp(this[DRAFT_STATE], prop, value)
             }
         }
+        descriptors[prop] = desc
     }
     Object.defineProperty(draft, prop, desc)
+}
+
+// TODO: Think about recycling
+function proxyMapAPI(draft) {
+    Object.defineProperty(draft, "get", {
+        get() {
+            return function(key) {
+                const state = this[DRAFT_STATE]
+                const drafts = state[state.modified ? "copy" : "draft"]
+                if (drafts.has(key)) {
+                    return drafts.get(key)
+                }
+
+                const value = latest(state).get(key)
+                if (state.finalized || !isDraftable(value)) {
+                    return value
+                }
+
+                const draft = createProxy(value, state)
+                drafts.set(key, draft)
+                return draft
+            }
+        }
+    })
 }
 
 function assertUnrevoked(state) {

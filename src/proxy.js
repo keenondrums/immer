@@ -5,9 +5,9 @@ import {
     has,
     is,
     isDraftable,
-    isDraft,
     isMap,
     isSet,
+    latest,
     shallowCopy,
     DRAFT_STATE,
     assignMap,
@@ -343,11 +343,6 @@ function wrapSetValue(state, value) {
 /**
  * Helpers
  */
-
-// Retrieve the latest values of the draft.
-function latest(state) {
-    return state.copy || state.base
-}
 
 // Access a property without creating an Immer draft.
 function peek(draft, prop) {
